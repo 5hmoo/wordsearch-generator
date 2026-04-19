@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Word Search Generator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 40px; color: black; background: white; }
+        .no-print { background: #f9f9f9; padding: 20px; border: 1px solid #ccc; margin-bottom: 30px; border-radius: 4px; }
+        .control-group { margin-bottom: 15px; }
+        label { font-weight: bold; display: block; margin-bottom: 5px; }
+        input[type="text"], textarea, select { 
+            width: 100%; border: 1px solid black; padding: 10px; margin-bottom: 10px; box-sizing: border-box;
+        }
+        textarea { height: 120px; }
+        button { background: white; border: 1px solid black; padding: 8px 16px; cursor: pointer; margin-right: 5px; font-weight: bold; }
+        button:hover { background: #eee; }
+
+        #export-area { background: white; padding: 30px; display: inline-block; text-align: center; }
+        #puzzle-title-display { 
+            font-family: "Georgia", "Times New Roman", serif; 
+            font-size: 38px; font-style: italic; text-transform: capitalize; 
+            margin-bottom: 25px; text-align: center; border-bottom: 2px solid black;
+            padding-bottom: 15px; width: 700px; 
+        }
+
+        .puzzle-wrapper { position: relative; display: inline-block; }
+        .grid { 
+            display: grid; grid-template-columns: repeat(20, 35px);
+            border: none; background-color: transparent; position: relative; z-index: 2; 
+            font-family: "Arial", sans-serif;
+        }
+        .cell {
+            width: 35px; height: 35px; display: flex; align-items: center; justify-content: center;
+            font-size: 1.5rem; text-transform: uppercase; color: black; font-weight: 400;
+        }
+
+        #svg-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; display: none; }
+        
+        /* Updated style for overlapping outlines */
+        .word-pill { 
+            fill: rgba(0, 0, 0, 0.02); /* Very light fill to help define the shape */
+            stroke: rgba(0, 0, 0, 0.8); /* Semi-transparent stroke so overlaps darken */
+            stroke-width: 2; 
+        }
+
+        #word-list-display {
+            margin-top: 40px; column-count: 3; column-gap: 50px;
+            font-size: 1.1rem; text-transform: uppercase; font-family: "Arial", sans-serif;
+            border-top: 1px solid #eee; padding-top: 20px; width: 700px; text-align: left;
+        }
+        #status-msg { color: red; font-weight: bold; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+    <div class="no-print">
+        <div class="control-group">
+            <label>1. Puzzle Title:</label>
+            <input type="text" id="titleInput" placeholder="Enter title..." oninput="updateTitle()">
+        </div>
+        <div class="control-group">
+            <label>2. Word List (Spaces allowed):</label>
+            <textarea id="wordInput">CHANUKKAH GELT
+STAR OF DAVID
+MACCABEE
+DREIDEL
+MENORAH
+TEMPLE
+FESTIVAL
+MIRACLE</textarea>
+        </div>
+        <div class="control-group">
+            <label>3. Difficulty:</label>
+            <select id="difficultySelect">
+                <option value="easy">Easy (Horizontal/Vertical Only)</option>
+                <option value="medium">Medium (Includes Backwards)</option>
+                <option value="hard" selected>Hard (All Directions)</option>
+            </select>
+        </div>
+        <div id="status-msg"></div>
+        <div style="margin-top:10px;">
+            <button onclick="generatePuzzle()">Generate New Puzzle</button>
+            <button onclick="toggleSolution()">Show/Hide Solution</button>
+            <button onclick="downloadPNG()">Download PNG</button>
+            <button onclick="downloadPDF()">Download PDF</button>
+        </div>
+    </div>
+
+    <div id="export-area">
+        <div id="puzzle-title-display">Word Search</div>
+        <div class="puzzle-wrapper">
+            <svg id="svg-overlay"></svg>
+            <div id="grid" class="grid"></div>
+        </div>
+        <div id="word-list-display"></div>
+    </div>
+
+    <script>
+        let placedWords = []; 
+        const gridSize = 20;
+        const cellPixels = 35;
+
+        function updateTitle() {
+            const val = document.getElementById('titleInput').value;
+            document.getElementById('puzzle-title-display').textContent = val || "Word Search";
+        }
+
+        function getFileName() {
+            const title = document.getElementById('titleInput').value.trim() || "Word Search";
+            const isSolution = document.getElementById('svg-overlay').style.display === 'block';
+            return title.replace(/\s+/g, '-') + (isSolution ? "-Solution" : "");
+        }
+
+        function getDirections() {
+            const level = document.getElementById('difficultySelect').value;
+            if (level === 'easy') return [[1, 0], [0, 1]]; 
+            if (level === 'medium') return [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1]];
+            return [[1,0],[0,1],[1,1],[1,-1],[-1,0],[0,-1],[-1,-1],[-1,1]];
+        }
+
+        function getCrowdingFactor(grid, word, x, y, dir) {
+            let count = 0;
+            for (let i = 0; i < word.length; i++) {
+                const nx = x + i * dir[0];
+                const ny = y + i * dir[1];
+                for (let dy = -1; dy <= 1; dy++) {
+                    for (let dx = -1; dx <= 1; dx++) {
+                        const cx = nx + dx;
+                        const cy = ny + dy;
+                        if (cx >= 0 && cx < gridSize && cy >= 0 && cy < gridSize) {
+                            if (grid[cy][cx] !== '') count++;
+                        }
+                    }
+                }
+            }
+            return count;
+        }
+
+        function generatePuzzle() {
+            document.getElementById('status-msg').textContent = "";
+            placedWords = [];
+            const input = document.getElementById('wordInput').value;
+            const wordData = input.split('\n').map(w => w.trim()).filter(w => w.length > 0)
+                                  .map(w => ({ original: w, stripped: w.replace(/\s+/g, '').toUpperCase() }));
+            
+            const grid = Array(gridSize).fill().map(() => Array(gridSize).fill(''));
+            const directions = getDirections();
+            wordData.sort((a, b) => b.stripped.length - a.stripped.length);
+
+            wordData.forEach(item => {
+                let placed = false;
+                const word = item.stripped;
+
+                const possibilities = [];
+                for (let y = 0; y < gridSize; y++) {
+                    for (let x = 0; x < gridSize; x++) {
+                        if (grid[y][x] !== '') {
+                            const charIndex = word.indexOf(grid[y][x]);
+                            if (charIndex !== -1) {
+                                directions.forEach(dir => {
+                                    const startX = x - (charIndex * dir[0]);
+                                    const startY = y - (charIndex * dir[1]);
+                                    if (canPlace(grid, word, startX, startY, dir)) {
+                                        possibilities.push({ x: startX, y: startY, dir });
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+                
+                if (possibilities.length > 0) {
+                    const pick = possibilities[Math.floor(Math.random() * possibilities.length)];
+                    placeWord(grid, word, pick.x, pick.y, pick.dir);
+                    placed = true;
+                }
+
+                if (!placed) {
+                    let bestSpot = null;
+                    let minCrowding = Infinity;
+
+                    for (let attempts = 0; attempts < 50; attempts++) {
+                        const dir = directions[Math.floor(Math.random() * directions.length)];
+                        const x = Math.floor(Math.random() * gridSize);
+                        const y = Math.floor(Math.random() * gridSize);
+
+                        if (canPlace(grid, word, x, y, dir)) {
+                            const crowding = getCrowdingFactor(grid, word, x, y, dir);
+                            if (crowding < minCrowding) {
+                                minCrowding = crowding;
+                                bestSpot = { x, y, dir };
+                            }
+                        }
+                    }
+
+                    if (bestSpot) {
+                        placeWord(grid, word, bestSpot.x, bestSpot.y, bestSpot.dir);
+                        placed = true;
+                    }
+                }
+
+                if (!placed) {
+                    let rescueAttempts = 0;
+                    while (!placed && rescueAttempts < 1000) {
+                        const dir = directions[Math.floor(Math.random() * directions.length)];
+                        const x = Math.floor(Math.random() * gridSize);
+                        const y = Math.floor(Math.random() * gridSize);
+                        if (canPlace(grid, word, x, y, dir)) {
+                            placeWord(grid, word, x, y, dir);
+                            placed = true;
+                        }
+                        rescueAttempts++;
+                    }
+                }
+
+                if (!placed) document.getElementById('status-msg').textContent += `Failed: ${item.original}. `;
+            });
+
+            fillRandom(grid);
+            renderGrid(grid);
+            drawWordBubbles();
+            renderList(wordData.map(d => d.original));
+        }
+
+        function placeWord(grid, word, x, y, dir) {
+            for (let i = 0; i < word.length; i++) {
+                grid[y + i * dir[1]][x + i * dir[0]] = word[i];
+            }
+            placedWords.push({
+                startX: x, startY: y,
+                endX: x + (word.length - 1) * dir[0],
+                endY: y + (word.length - 1) * dir[1]
+            });
+        }
+
+        function canPlace(grid, word, x, y, [dx, dy]) {
+            for (let i = 0; i < word.length; i++) {
+                const nx = x + i * dx;
+                const ny = y + i * dy;
+                if (nx < 0 || nx >= gridSize || ny < 0 || ny >= gridSize) return false;
+                if (grid[ny][nx] !== '' && grid[ny][nx] !== word[i]) return false;
+            }
+            return true;
+        }
+
+        function fillRandom(grid) {
+            for (let y = 0; y < gridSize; y++) {
+                for (let x = 0; x < gridSize; x++) {
+                    if (grid[y][x] === '') grid[y][x] = String.fromCharCode(65 + Math.floor(Math.random() * 26));
+                }
+            }
+        }
+
+        function renderGrid(grid) {
+            const gridEl = document.getElementById('grid');
+            gridEl.innerHTML = '';
+            for (let y = 0; y < gridSize; y++) {
+                for (let x = 0; x < gridSize; x++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'cell';
+                    cell.textContent = grid[y][x];
+                    gridEl.appendChild(cell);
+                }
+            }
+        }
+
+        function drawWordBubbles() {
+            const svgEl = document.getElementById('svg-overlay');
+            const pixels = gridSize * cellPixels;
+            svgEl.setAttribute('viewBox', `0 0 ${pixels} ${pixels}`);
+            svgEl.innerHTML = '';
+            
+            placedWords.forEach(p => {
+                const x1 = (p.startX * cellPixels) + 17.5;
+                const y1 = (p.startY * cellPixels) + 17.5;
+                const x2 = (p.endX * cellPixels) + 17.5;
+                const y2 = (p.endY * cellPixels) + 17.5;
+
+                // We create a "capsule" or "pill" shape outline
+                const r = 14; // Radius of the pill end
+                const dx = x2 - x1;
+                const dy = y2 - y1;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                
+                // Normal vector for the offset
+                const nx = (dy / len) * r;
+                const ny = (-dx / len) * r;
+
+                // Drawing a path that traces the outside of the word area
+                const pathData = `
+                    M ${x1 + nx} ${y1 + ny}
+                    L ${x2 + nx} ${y2 + ny}
+                    A ${r} ${r} 0 0 1 ${x2 - nx} ${y2 - ny}
+                    L ${x1 - nx} ${y1 - ny}
+                    A ${r} ${r} 0 0 1 ${x1 + nx} ${y1 + ny}
+                `;
+
+                const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                path.setAttribute("d", pathData);
+                path.setAttribute("class", "word-pill");
+                svgEl.appendChild(path);
+            });
+        }
+
+        function renderList(originals) {
+            document.getElementById('word-list-display').innerHTML = 
+                originals.sort().map(w => `<div>${w}</div>`).join('');
+        }
+
+        function toggleSolution() {
+            const svgEl = document.getElementById('svg-overlay');
+            svgEl.style.display = (svgEl.style.display === 'block') ? 'none' : 'block';
+        }
+
+        async function downloadPNG() {
+            const wordList = document.getElementById('word-list-display');
+            const isSolution = document.getElementById('svg-overlay').style.display === 'block';
+            
+            if (isSolution) wordList.style.display = 'none';
+            const canvas = await html2canvas(document.getElementById('export-area'), { scale: 3 });
+            if (isSolution) wordList.style.display = 'block';
+
+            const link = document.createElement('a');
+            link.download = getFileName() + '.png';
+            link.href = canvas.toDataURL();
+            link.click();
+        }
+
+        async function downloadPDF() {
+            const { jsPDF } = window.jspdf;
+            const wordList = document.getElementById('word-list-display');
+            const isSolution = document.getElementById('svg-overlay').style.display === 'block';
+
+            if (isSolution) wordList.style.display = 'none';
+            const canvas = await html2canvas(document.getElementById('export-area'), { scale: 3 });
+            if (isSolution) wordList.style.display = 'block';
+
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const width = pdf.internal.pageSize.getWidth();
+            const imgHeight = (canvas.height * width) / canvas.width;
+            
+            pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 10, width, imgHeight);
+            pdf.save(getFileName() + ".pdf");
+        }
+    </script>
+</body>
+</html>
