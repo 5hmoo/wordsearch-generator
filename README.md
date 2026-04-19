@@ -1,5 +1,5 @@
 # Simple Wordsearch Generator
-### [Open the Live Tool](https://5hmoo.github.io/wordsearch-generator/)
+### [Open the Live Tool]([https://5hmoo.github.io/wordsearch-generator/index.html])
 
 Generates a 20x20 letter grid wordsearch and solution from your input, which can then be printed or saved as an image.
 
